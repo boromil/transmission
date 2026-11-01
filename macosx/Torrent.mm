@@ -26,6 +26,10 @@ NSString* const kTorrentDidChangeGroupNotification = @"TorrentDidChangeGroup";
 
 static int const kETAIdleDisplaySec = 2 * 60;
 
+// a move can legitimately take hours, but tr_torrentSetLocation() does not always write a
+// final state, so the poll has to end on its own rather than spin on TR_LOC_MOVING forever
+static NSUInteger const kMaxMovePollCount = 6 * 60 * 60 * 2;
+
 static dispatch_queue_t timeMachineExcludeQueue;
 
 @interface Torrent ()
@@ -61,6 +65,8 @@ static dispatch_queue_t timeMachineExcludeQueue;
 
 @property(nonatomic, readonly) BOOL shouldShowEta;
 @property(nonatomic, readonly) NSString* etaString;
+
+@property(nonatomic) NSTimer* fMoveTimer;
 
 @end
 
@@ -565,30 +571,73 @@ static tr_torrent_rename_done_func makeRenameDoneCallback(NSDictionary* contextI
         return;
     }
 
-    int volatile status;
-    tr_torrentSetLocation(self.fHandle, folder.UTF8String, YES, &status);
-
-    while (status == TR_LOC_MOVING) //block while moving (for now)
+    // one move at a time: tr_torrentSetLocation() queues the work on the session thread,
+    // so a second move for the same torrent would race the first for the same files
+    if (self.fMoveTimer != nil)
     {
-        [NSThread sleepForTimeInterval:0.05];
+        return;
     }
 
-    if (status == TR_LOC_DONE)
-    {
-        [NSNotificationCenter.defaultCenter postNotificationName:@"UpdateStats" object:nil];
-    }
-    else
-    {
-        NSAlert* alert = [[NSAlert alloc] init];
-        alert.messageText = NSLocalizedString(@"There was an error moving the data file.", "Move error alert -> title");
-        alert.informativeText = [NSString
-            stringWithFormat:NSLocalizedString(@"The move operation of \"%@\" cannot be done.", "Move error alert -> message"), self.name];
-        [alert addButtonWithTitle:NSLocalizedString(@"OK", "Move error alert -> button")];
+    // the status is heap-allocated because tr_torrentSetLocation() keeps the pointer and writes
+    // to it from the session thread after this method has returned; the poll block owns it and
+    // frees it once the core has stopped writing, even if this object is gone by then
+    auto* const status = new int{ TR_LOC_MOVING };
+    tr_torrentSetLocation(self.fHandle, folder.UTF8String, YES, status);
 
-        [alert runModal];
-    }
+    __weak __auto_type weakSelf = self;
+    __block NSUInteger pollCount = 0;
 
-    [self updateTimeMachineExclude];
+    NSTimer* const timer = [NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer* moveTimer) {
+        ++pollCount;
+
+        int const state = *status;
+        Torrent* const torrent = weakSelf;
+
+        if (state == TR_LOC_MOVING && pollCount < kMaxMovePollCount)
+        {
+            return;
+        }
+
+        [moveTimer invalidate];
+        torrent.fMoveTimer = nil; // nil-safe: the torrent may be gone already
+
+        if (state == TR_LOC_MOVING)
+        {
+            // the core still holds the pointer and may write its result later, so leak a few
+            // bytes here rather than free memory the session thread may still write to
+            NSLog(@"Gave up waiting for a data file move to report its result");
+            return;
+        }
+
+        delete status;
+
+        if (torrent == nil)
+        {
+            return;
+        }
+
+        if (state == TR_LOC_DONE)
+        {
+            [NSNotificationCenter.defaultCenter postNotificationName:@"UpdateStats" object:nil];
+        }
+        else
+        {
+            NSAlert* alert = [[NSAlert alloc] init];
+            alert.messageText = NSLocalizedString(@"There was an error moving the data file.", "Move error alert -> title");
+            alert.informativeText = [NSString
+                stringWithFormat:NSLocalizedString(@"The move operation of \"%@\" cannot be done.", "Move error alert -> message"),
+                                 torrent.name];
+            [alert addButtonWithTitle:NSLocalizedString(@"OK", "Move error alert -> button")];
+
+            [alert runModal];
+        }
+
+        [torrent updateTimeMachineExclude];
+    }];
+
+    // NSRunLoopCommonModes so the poll keeps running while a menu or a modal panel is up
+    [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
+    self.fMoveTimer = timer;
 }
 
 - (void)copyTorrentFileTo:(NSString*)path
