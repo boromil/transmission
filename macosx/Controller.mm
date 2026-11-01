@@ -124,6 +124,10 @@ static CGFloat const kBottomBarHeight = 24.0;
 
 static NSTimeInterval const kUpdateUISeconds = 1.0;
 
+// tr_sessionClose() waits for in-flight tracker stop announces before returning; its default is
+// 15s, long enough to beachball the main thread on quit, so give it a shorter budget
+static double constexpr kSessionCloseTimeoutSeconds = 2.0;
+
 static NSString* const kTransferPlist = @"Transfers.plist";
 
 static NSString* const kWebsiteURL = @"https://transmissionbt.com/";
@@ -961,6 +965,11 @@ static void removeKeRangerRansomware()
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication*)app hasVisibleWindows:(BOOL)visibleWindows
 {
+    if (self.fQuitting)
+    {
+        return NO;
+    }
+
     NSWindow* mainWindow = NSApp.mainWindow;
     if (!mainWindow || !mainWindow.visible)
     {
@@ -972,9 +981,15 @@ static void removeKeRangerRansomware()
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender
 {
+    if (self.fQuitting)
+    {
+        return NSTerminateLater; // a reply for the pending request will end the app
+    }
+
     if (self.fQuitRequested || ![self.fDefaults boolForKey:@"CheckQuit"])
     {
-        return NSTerminateNow;
+        [self beginTermination];
+        return NSTerminateLater;
     }
 
     NSUInteger active = 0, downloading = 0;
@@ -994,7 +1009,8 @@ static void removeKeRangerRansomware()
 
     if (!preventedByTransfer)
     {
-        return NSTerminateNow;
+        [self beginTermination];
+        return NSTerminateLater;
     }
 
     NSAlert* alert = [[NSAlert alloc] init];
@@ -1019,16 +1035,22 @@ static void removeKeRangerRansomware()
         {
             [self.fDefaults setBool:NO forKey:@"CheckQuit"];
         }
-        [NSApp replyToApplicationShouldTerminate:returnCode == NSAlertFirstButtonReturn];
+
+        if (returnCode == NSAlertFirstButtonReturn)
+        {
+            [self beginTermination];
+        }
+        else
+        {
+            [NSApp replyToApplicationShouldTerminate:NO];
+        }
     }];
 
     return NSTerminateLater;
 }
 
-- (void)applicationWillTerminate:(NSNotification*)notification
+- (void)tearDownBeforeSessionClose
 {
-    self.fQuitting = YES;
-
     [PowerManager.shared stop];
 
     //stop the Bonjour service
@@ -1081,9 +1103,53 @@ static void removeKeRangerRansomware()
     [self.fTableView saveCollapsedGroups];
 
     _fileWatcherQueue = nil;
+}
 
-    //complete cleanup: this can take many seconds
-    tr_sessionClose(self.fLib);
+- (void)beginTermination
+{
+    if (self.fQuitting)
+    {
+        return;
+    }
+
+    self.fQuitting = YES;
+
+    // no UI may touch the session once tr_sessionClose() starts, so take it down first
+    [self tearDownBeforeSessionClose];
+
+    // with no windows left, keep the menu bar from reaching a closing session
+    [NSApp hide:nil];
+
+    if (self.fLib == nullptr)
+    {
+        [NSApp replyToApplicationShouldTerminate:YES];
+        return;
+    }
+
+    // tr_sessionClose() waits for tracker stop announces and can take seconds; do it off the main
+    // thread and report back when it is done, so the app never beachballs on quit
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        tr_sessionClose(self.fLib, kSessionCloseTimeoutSeconds);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [NSApp replyToApplicationShouldTerminate:YES];
+        });
+    });
+}
+
+- (void)applicationWillTerminate:(NSNotification*)notification
+{
+    if (self.fQuitting)
+    {
+        return; // -beginTermination has already torn down the UI and closed the session
+    }
+
+    // fallback for termination that did not go through -applicationShouldTerminate:
+    self.fQuitting = YES;
+    [self tearDownBeforeSessionClose];
+    if (self.fLib != nullptr)
+    {
+        tr_sessionClose(self.fLib, kSessionCloseTimeoutSeconds);
+    }
 }
 
 - (BOOL)applicationSupportsSecureRestorableState:(NSApplication*)app
@@ -5424,6 +5490,11 @@ static void removeKeRangerRansomware()
     @autoreleasepool
     {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.fQuitting)
+            {
+                return; // the session may be closing or already freed
+            }
+
             //get the torrent
             Torrent* torrent = nil;
             if (torrentId.has_value() && (type != TR_RPC_TORRENT_ADDED && type != TR_RPC_SESSION_CHANGED && type != TR_RPC_SESSION_CLOSE))
