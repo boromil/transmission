@@ -19,6 +19,7 @@
 #include <libtransmission/transmission.h>
 #include <libtransmission/rpcimpl.h>
 #include <libtransmission/variant.h>
+#include <libtransmission/web-utils.h>
 
 #include "test-fixtures.h"
 
@@ -928,5 +929,28 @@ TEST_F(RpcTest, DISABLED_wellFormedLegacyFreeSpace)
     EXPECT_EQ(Expected, actual);
 }
 } // namespace free_space_test
+
+TEST(RpcOriginTest, matchesSameHostAndPort)
+{
+    EXPECT_TRUE(tr_urlIsSameOrigin("http://127.0.0.1:9091", "127.0.0.1:9091"));
+    EXPECT_TRUE(tr_urlIsSameOrigin("http://localhost", "localhost"));
+    EXPECT_TRUE(tr_urlIsSameOrigin("http://localhost:80", "localhost"));
+    EXPECT_TRUE(tr_urlIsSameOrigin("https://localhost", "localhost:443"));
+    EXPECT_TRUE(tr_urlIsSameOrigin("http://LOCALHOST:9091", "localhost:9091"));
+    EXPECT_TRUE(tr_urlIsSameOrigin("http://[::1]:9091", "[::1]:9091"));
+}
+
+TEST(RpcOriginTest, rejectsDifferentHostOrPort)
+{
+    EXPECT_FALSE(tr_urlIsSameOrigin("http://evil.example", "127.0.0.1:9091"));
+    EXPECT_FALSE(tr_urlIsSameOrigin("http://127.0.0.1:9091", "127.0.0.1:9092"));
+    EXPECT_FALSE(tr_urlIsSameOrigin("http://127.0.0.1:8080", "127.0.0.1"));
+    EXPECT_FALSE(tr_urlIsSameOrigin("null", "127.0.0.1:9091"));
+    EXPECT_FALSE(tr_urlIsSameOrigin("", "127.0.0.1:9091"));
+    EXPECT_FALSE(tr_urlIsSameOrigin("http://127.0.0.1:9091", ""));
+    EXPECT_FALSE(tr_urlIsSameOrigin("file://127.0.0.1", "127.0.0.1"));
+    EXPECT_FALSE(tr_urlIsSameOrigin("http://user@127.0.0.1:9091", "127.0.0.1:9091"));
+    EXPECT_FALSE(tr_urlIsSameOrigin("http://127.0.0.1:9091@evil.example", "127.0.0.1:9091"));
+}
 
 } // namespace tr::test

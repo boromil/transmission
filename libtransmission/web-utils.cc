@@ -498,3 +498,35 @@ std::string tr_urlPercentDecode(std::string_view in)
 
     return out;
 }
+
+bool tr_urlIsSameOrigin(std::string_view origin, std::string_view host_header)
+{
+    auto const origin_parsed = tr_urlParse(origin);
+    if (!origin_parsed || std::empty(origin_parsed->host_wo_brackets))
+    {
+        return false;
+    }
+
+    if (origin_parsed->scheme != "http"sv && origin_parsed->scheme != "https"sv)
+    {
+        return false;
+    }
+
+    // an Origin header has no userinfo, and neither does a Host header
+    if (tr_strv_contains(origin_parsed->authority, '@'))
+    {
+        return false;
+    }
+
+    // the Host header has no scheme; give it the origin's so the default ports match
+    // the formatted string must outlive the parsed views that point into it
+    auto const host_url = fmt::format("{:s}://{:s}"sv, origin_parsed->scheme, host_header);
+    auto const host_parsed = tr_urlParse(host_url);
+    if (!host_parsed || std::empty(host_parsed->host_wo_brackets) || tr_strv_contains(host_parsed->authority, '@'))
+    {
+        return false;
+    }
+
+    return origin_parsed->port == host_parsed->port &&
+        tr_strlower(origin_parsed->host_wo_brackets) == tr_strlower(host_parsed->host_wo_brackets);
+}

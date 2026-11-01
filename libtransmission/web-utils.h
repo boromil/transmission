@@ -51,6 +51,11 @@ struct tr_url_parsed_t
 // must be one we that Transmission supports for announce and scrape
 [[nodiscard]] std::optional<tr_url_parsed_t> tr_urlParseTracker(std::string_view url);
 
+// whether the Origin header value `origin` names the same host and port as the request's
+// Host header `host_header`, i.e. whether the request is same-origin. A port omitted from
+// either side is compared against the origin scheme's default port.
+[[nodiscard]] bool tr_urlIsSameOrigin(std::string_view origin, std::string_view host_header);
+
 // Convenience function to get a log-safe version of a tracker URL.
 // This is to avoid logging sensitive info, e.g. a personal announcer id in the URL.
 [[nodiscard]] std::string tr_urlTrackerLogName(std::string_view url);

@@ -560,16 +560,29 @@ void handle_request(struct evhttp_request* req, void* arg)
         return;
     }
 
-    evhttp_add_header(output_headers, "Access-Control-Allow-Origin", "*");
-
     auto const* const input_headers = evhttp_request_get_input_headers(req);
+
+    // browsers send Origin on cross-origin requests; reject them and never advertise CORS
+    // access, so a web page cannot drive the RPC server
+    if (char const* const origin = evhttp_find_header(input_headers, "Origin"); origin != nullptr)
+    {
+        char const* const host = evhttp_find_header(input_headers, "Host");
+        if (!tr_urlIsSameOrigin(origin, host != nullptr ? host : ""))
+        {
+            tr_logAddWarn(
+                fmt::format(
+                    fmt::runtime(_("Rejected request from {host} (cross-origin request from {origin})")),
+                    fmt::arg("host", remote_host),
+                    fmt::arg("origin", origin)));
+            send_simple_response(req, HttpErrorForbidden);
+            return;
+        }
+    }
+
     if (auto const cmd = evhttp_request_get_command(req); cmd == EVHTTP_REQ_OPTIONS)
     {
-        if (char const* headers = evhttp_find_header(input_headers, "Access-Control-Request-Headers"); headers != nullptr)
-        {
-            evhttp_add_header(output_headers, "Access-Control-Allow-Headers", headers);
-        }
-
+        auto const allowed_headers = fmt::format("content-type, {:s}", TrRpcSessionIdHeader);
+        evhttp_add_header(output_headers, "Access-Control-Allow-Headers", allowed_headers.c_str());
         evhttp_add_header(output_headers, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         send_simple_response(req, HTTP_OK);
         return;
@@ -646,9 +659,6 @@ void handle_request(struct evhttp_request* req, void* arg)
         evhttp_add_header(output_headers, std::data(TrRpcSessionIdHeader), session_id.c_str());
 
         evhttp_add_header(output_headers, std::data(TrRpcVersionHeader), std::data(TrRpcVersionSemver));
-
-        auto const expose_val = fmt::format("{:s}, {:s}", TrRpcSessionIdHeader, TrRpcVersionHeader);
-        evhttp_add_header(output_headers, "Access-Control-Expose-Headers", expose_val.c_str());
 
         auto const body = fmt::format(
             "<p>Your request had an invalid session_id header.</p>"
