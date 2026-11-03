@@ -10,6 +10,7 @@
 #include <fstream>
 #include <ios>
 #include <memory>
+#include <new> // std::bad_alloc
 #include <optional>
 #include <ranges>
 #include <string>
@@ -67,8 +68,8 @@ tr_metadata_download::tr_metadata_download(std::string_view log_name, int64_t co
     auto const n = n_metadata_pieces(size);
     tr_logAddDebugMagnet(this, fmt::format("metadata is {} bytes in {} pieces", size, n));
 
+    size_ = size;
     piece_count_ = n;
-    metadata_.resize(size);
     create_all_needed(n);
 }
 
@@ -296,7 +297,20 @@ bool tr_metadata_download::set_metadata_piece(int64_t const piece, void const* c
         return false;
     }
 
-    auto const offset = piece * MetadataPieceSize;
+    // grow the buffer only as far as the received pieces require
+    auto const offset = static_cast<size_t>(piece) * MetadataPieceSize;
+    if (auto const needed_size = offset + len; needed_size > std::size(metadata_))
+    {
+        try
+        {
+            metadata_.resize(needed_size);
+        }
+        catch (std::bad_alloc const&)
+        {
+            return false;
+        }
+    }
+
     std::copy_n(static_cast<char const*>(data), len, std::begin(metadata_) + offset);
 
     needed.erase(iter);

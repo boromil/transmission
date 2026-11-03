@@ -4,7 +4,10 @@
 // License text can be found in the licenses/ folder.
 
 #include <cstddef> // size_t
+#include <array>
+#include <cstdint> // int64_t
 #include <future>
+#include <limits>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -19,6 +22,47 @@ namespace tr::test
 {
 
 using TorrentMagnetTest = SessionTest;
+
+TEST(MetadataSizeTest, rejectsOversizeSizes)
+{
+    auto constexpr MaxSize = int64_t{ 64 } * 1024 * 1024;
+
+    EXPECT_TRUE(tr_metadata_download::is_valid_metadata_size(1));
+    EXPECT_TRUE(tr_metadata_download::is_valid_metadata_size(MetadataPieceSize));
+    EXPECT_TRUE(tr_metadata_download::is_valid_metadata_size(MaxSize));
+
+    EXPECT_FALSE(tr_metadata_download::is_valid_metadata_size(0));
+    EXPECT_FALSE(tr_metadata_download::is_valid_metadata_size(-1));
+    EXPECT_FALSE(tr_metadata_download::is_valid_metadata_size(MaxSize + 1));
+    EXPECT_FALSE(tr_metadata_download::is_valid_metadata_size(std::numeric_limits<int64_t>::max()));
+}
+
+TEST(MetadataDownloadTest, growsLazily)
+{
+    auto constexpr N = int64_t{ 3 };
+    auto const size = N * MetadataPieceSize;
+    auto download = tr_metadata_download{ "test", size };
+
+    // the full buffer is not allocated up front
+    EXPECT_TRUE(download.get_metadata().empty());
+
+    // a piece with the wrong length is rejected without allocating
+    auto const buf = std::array<std::byte, MetadataPieceSize>{};
+    EXPECT_FALSE(download.set_metadata_piece(0, std::data(buf), 1U));
+    EXPECT_TRUE(download.get_metadata().empty());
+
+    // out-of-order pieces grow the buffer only as far as needed
+    EXPECT_FALSE(download.set_metadata_piece(1, std::data(buf), std::size(buf)));
+    EXPECT_EQ(download.get_metadata().size(), 2U * MetadataPieceSize);
+
+    EXPECT_FALSE(download.set_metadata_piece(0, std::data(buf), std::size(buf)));
+    EXPECT_EQ(download.get_metadata().size(), 2U * MetadataPieceSize);
+
+    // the last piece completes the download and reaches the declared size
+    EXPECT_TRUE(download.set_metadata_piece(2, std::data(buf), std::size(buf)));
+    EXPECT_EQ(download.get_metadata().size(), static_cast<size_t>(size));
+    EXPECT_EQ(download.get_metadata_percent(), 1.0);
+}
 
 TEST_F(TorrentMagnetTest, getMetadataPiece)
 {
