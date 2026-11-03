@@ -686,6 +686,40 @@ TEST_F(RpcTest, sessionGet)
     tr_torrentRemove(tor, false);
 }
 
+TEST_F(RpcTest, sessionSetScriptHookRejected)
+{
+    auto args_map = tr_variant::Map{ 2U };
+    args_map.try_emplace(TR_KEY_script_torrent_done_enabled, true);
+    args_map.try_emplace(TR_KEY_script_torrent_done_filename, "/tmp/f2-hook.sh");
+
+    auto request_map = tr_variant::Map{ 4U };
+    request_map.try_emplace(TR_KEY_jsonrpc, JsonRpc::Version);
+    request_map.try_emplace(TR_KEY_method, tr_variant::unmanaged_string(TR_KEY_session_set));
+    request_map.try_emplace(TR_KEY_id, 12345);
+    request_map.try_emplace(TR_KEY_params, std::move(args_map));
+    auto request = tr_variant{ std::move(request_map) };
+
+    auto response = tr_variant{};
+    tr_rpc_request_exec(session_, request, [&response](tr_variant&& resp) { response = std::move(resp); });
+
+    auto* const response_map = response.get_if<tr_variant::Map>();
+    ASSERT_NE(response_map, nullptr);
+    auto* const error_map = response_map->find_if<tr_variant::Map>(TR_KEY_error);
+    ASSERT_NE(error_map, nullptr);
+    auto const error_code = error_map->value_if<int64_t>(TR_KEY_code);
+    ASSERT_TRUE(error_code);
+    EXPECT_EQ(*error_code, JsonRpc::Error::INVALID_PARAMS);
+    auto* const data_map = error_map->find_if<tr_variant::Map>(TR_KEY_data);
+    ASSERT_NE(data_map, nullptr);
+    auto const error_string = data_map->value_if<std::string_view>(TR_KEY_error_string);
+    ASSERT_TRUE(error_string);
+    EXPECT_NE(std::string_view::npos, error_string->find("settings.json"));
+
+    // the hook was not installed
+    EXPECT_TRUE(session_->script(TR_SCRIPT_ON_TORRENT_DONE).empty());
+    EXPECT_FALSE(session_->useScript(TR_SCRIPT_ON_TORRENT_DONE));
+}
+
 TEST_F(RpcTest, torrentGet)
 {
     auto* tor = zeroTorrentInit(ZeroTorrentState::NoFiles);

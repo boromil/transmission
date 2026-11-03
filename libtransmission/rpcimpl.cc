@@ -2648,6 +2648,13 @@ using SessionAccessors = std::pair<SessionGetter, SessionSetter>;
     // `row` could have been replaced by structured bindings,
     // but it's not available until clang 16
     // https://github.com/llvm/llvm-project/commit/44f2baa3804a62ca793f0ff3e43aa71cea91a795
+    // a script hook runs an arbitrary path, so it is privileged: it can be read over RPC but
+    // only changed in settings.json or through the C API
+    auto const reject_script_setter = [](tr_session& /*tgt*/, tr_variant const& /*src*/, ErrorInfo& err)
+    {
+        err = { JsonRpc::Error::INVALID_PARAMS, "script hooks can only be configured in settings.json"s };
+    };
+
     for (auto const& row : tr_session::Scripts)
     {
         auto const script = row.script;
@@ -2655,24 +2662,12 @@ using SessionAccessors = std::pair<SessionGetter, SessionSetter>;
         map.try_emplace(
             row.enabled_key,
             [script](tr_session const& src) -> tr_variant { return src.useScript(script); },
-            [script](tr_session& tgt, tr_variant const& src, ErrorInfo& /*err*/)
-            {
-                if (auto const val = src.value_if<bool>())
-                {
-                    tgt.useScript(script, *val);
-                }
-            });
+            reject_script_setter);
 
         map.try_emplace(
             row.filename_key,
             [script](tr_session const& src) -> tr_variant { return src.script(script); },
-            [script](tr_session& tgt, tr_variant const& src, ErrorInfo& /*err*/)
-            {
-                if (auto const val = src.value_if<std::string_view>())
-                {
-                    tgt.setScript(script, *val);
-                }
-            });
+            reject_script_setter);
     }
 
     return map;
