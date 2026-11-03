@@ -402,6 +402,10 @@ static void removeKeRangerRansomware()
 @property(nonatomic, readonly) NSMutableArray* fDisplayedTorrents;
 @property(nonatomic, readonly) NSMutableDictionary<NSString*, Torrent*>* fTorrentHashes;
 
+@property(nonatomic) NSArray<NSSortDescriptor*>* fSortDescriptors;
+@property(nonatomic, copy) NSString* fSortDescriptorsKey;
+@property(nonatomic) NSUInteger fSortFingerprint;
+
 @property(nonatomic, readonly) InfoWindowController* fInfoController;
 @property(nonatomic) MessageWindowController* fMessageController;
 
@@ -2410,7 +2414,7 @@ static void removeKeRangerRansomware()
     {
         if (self.fWindow.visible)
         {
-            [self sortTorrentsAndIncludeQueueOrder:NO];
+            [self sortTorrentsIfNeeded];
 
             [self.fStatusBar updateWithDownload:dlRate upload:ulRate];
 
@@ -2800,15 +2804,21 @@ static void removeKeRangerRansomware()
     self.fTableView.needsDisplay = YES;
 }
 
-- (void)sortTorrentsCallUpdates:(BOOL)callUpdates includeQueueOrder:(BOOL)includeQueueOrder
+- (NSArray<NSSortDescriptor*>*)sortDescriptorsIncludingQueueOrder:(BOOL)includeQueueOrder
 {
     BOOL const asc = ![self.fDefaults boolForKey:@"SortReverse"];
+    NSString* const sortType = [self.fDefaults stringForKey:@"Sort"];
+    NSString* const key = [NSString stringWithFormat:@"%@ %d %d", sortType, static_cast<int>(asc), static_cast<int>(includeQueueOrder)];
 
-    NSArray* descriptors;
+    if (self.fSortDescriptorsKey != nil && [self.fSortDescriptorsKey isEqualToString:key])
+    {
+        return self.fSortDescriptors;
+    }
+
+    NSArray<NSSortDescriptor*>* descriptors = nil;
     NSSortDescriptor* nameDescriptor = [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:asc
                                                                       selector:@selector(localizedStandardCompare:)];
 
-    NSString* sortType = [self.fDefaults stringForKey:@"Sort"];
     if ([sortType isEqualToString:SortTypeState])
     {
         NSSortDescriptor* stateDescriptor = [NSSortDescriptor sortDescriptorWithKey:@"stateSortKey" ascending:!asc];
@@ -2869,14 +2879,70 @@ static void removeKeRangerRansomware()
     {
         NSAssert1([sortType isEqualToString:SortTypeOrder], @"Unknown sort type received: %@", sortType);
 
-        if (!includeQueueOrder)
+        if (includeQueueOrder)
         {
-            return;
+            NSSortDescriptor* orderDescriptor = [NSSortDescriptor sortDescriptorWithKey:@"queuePosition" ascending:asc];
+
+            descriptors = @[ orderDescriptor ];
         }
+    }
 
-        NSSortDescriptor* orderDescriptor = [NSSortDescriptor sortDescriptorWithKey:@"queuePosition" ascending:asc];
+    self.fSortDescriptors = descriptors;
+    self.fSortDescriptorsKey = key;
+    self.fSortFingerprint = 0;
+    return descriptors;
+}
 
-        descriptors = @[ orderDescriptor ];
+- (NSUInteger)sortFingerprintForTorrents:(NSArray<Torrent*>*)torrents descriptors:(NSArray<NSSortDescriptor*>*)descriptors
+{
+    NSUInteger hash = 1;
+    for (Torrent* torrent in torrents)
+    {
+        for (NSSortDescriptor* descriptor in descriptors)
+        {
+            hash = hash * 31U + [[torrent valueForKey:descriptor.key] hash];
+        }
+    }
+    return hash;
+}
+
+- (NSUInteger)sortFingerprintForDescriptors:(NSArray<NSSortDescriptor*>*)descriptors
+{
+    if ([self.fDefaults boolForKey:@"SortByGroup"])
+    {
+        NSUInteger hash = 1;
+        for (TorrentGroup* group in self.fDisplayedTorrents)
+        {
+            hash = hash * 31U + [self sortFingerprintForTorrents:group.torrents descriptors:descriptors];
+        }
+        return hash;
+    }
+
+    return [self sortFingerprintForTorrents:self.fDisplayedTorrents descriptors:descriptors];
+}
+
+- (void)sortTorrentsIfNeeded
+{
+    NSArray<NSSortDescriptor*>* const descriptors = [self sortDescriptorsIncludingQueueOrder:NO];
+    if (descriptors == nil)
+    {
+        return; // the queue-order sort has nothing to update on a tick
+    }
+
+    if ([self sortFingerprintForDescriptors:descriptors] == self.fSortFingerprint)
+    {
+        return;
+    }
+
+    [self sortTorrentsCallUpdates:YES includeQueueOrder:NO];
+}
+
+- (void)sortTorrentsCallUpdates:(BOOL)callUpdates includeQueueOrder:(BOOL)includeQueueOrder
+{
+    NSArray<NSSortDescriptor*>* const descriptors = [self sortDescriptorsIncludingQueueOrder:includeQueueOrder];
+    if (descriptors == nil)
+    {
+        return;
     }
 
     BOOL beganTableUpdate = !callUpdates;
@@ -2900,6 +2966,8 @@ static void removeKeRangerRansomware()
     {
         [self.fTableView endUpdates];
     }
+
+    self.fSortFingerprint = [self sortFingerprintForDescriptors:descriptors];
 }
 
 #warning redo so that we search a copy once again (best explained by changing sorting from ascending to descending)
