@@ -15,6 +15,27 @@
 #include <libtransmission/crypto-utils.h>
 #include <libtransmission/bitfield.h>
 
+TEST(Bitfield, setOutOfRangeIsIgnored)
+{
+    // a zero-bit field is the "piece count not known yet" case used by magnets;
+    // setting a bit must not allocate a bit array for it
+    auto bf = tr_bitfield{ 0 };
+    bf.set(1024U * 1024U);
+    EXPECT_EQ(0U, bf.size());
+    EXPECT_EQ(0U, bf.count());
+    EXPECT_TRUE(bf.empty());
+
+    bf = tr_bitfield{ 10 };
+    bf.set(10U);
+    bf.set(SIZE_MAX - 1U);
+    EXPECT_EQ(0U, bf.count());
+
+    // in-range bits still work
+    bf.set(9U);
+    EXPECT_EQ(1U, bf.count());
+    EXPECT_TRUE(bf.test(9U));
+}
+
 TEST(Bitfield, count)
 {
     auto constexpr IterCount = size_t{ 10000U };

@@ -1605,10 +1605,22 @@ ReadResult tr_peerMsgsImpl::process_peer_message(uint8_t id, MessageReader& payl
         ui32 = payload.to_uint32();
         logtrace(this, fmt::format("got Have: {:d}", ui32));
 
-        if (tor_.has_metainfo() && ui32 >= tor_.piece_count())
+        if (ui32 >= tor_.piece_count())
         {
-            publish(tr_peer_event::GotError(ERANGE));
-            return { ReadState::Err, {} };
+            // without metainfo there is no piece count to validate this against
+            if (tor_.has_metainfo())
+            {
+                publish(tr_peer_event::GotError(ERANGE));
+                return { ReadState::Err, {} };
+            }
+
+            break;
+        }
+
+        if (std::empty(have_))
+        {
+            // the metainfo arrived after this connection was opened
+            have_ = tr_bitfield{ tor_.piece_count() };
         }
 
         /* a peer can send the same HAVE message twice... */

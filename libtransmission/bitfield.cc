@@ -318,6 +318,13 @@ void tr_bitfield::set_from_bools(bool const* flags, size_t n)
 
 void tr_bitfield::set(size_t nth, bool value)
 {
+    // never grow the bit array past the declared bit count; a zero-bit field is the
+    // "piece count not known yet" case used by magnet transfers
+    if (nth >= bit_count_)
+    {
+        return;
+    }
+
     if (test(nth) == value)
     {
         return;
