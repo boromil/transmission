@@ -68,6 +68,9 @@ namespace
 {
 auto constexpr TrUnixSocketPrefix = "unix:"sv;
 
+// large enough for a base64 metainfo blob, small enough that a POST cannot exhaust memory
+auto constexpr MaxRpcBodySize = ev_ssize_t{ 16 * 1024 * 1024 };
+
 /* The maximum size of a unix socket path is defined per-platform based on sockaddr_un.sun_path.
  * On Windows the fallback is the length of an ipv6 address. Subtracting one at the end is for
  * double counting null terminators from sun_path and TrUnixSocketPrefix. */
@@ -530,6 +533,13 @@ void handle_request(struct evhttp_request* req, void* arg)
 
     auto* server = static_cast<tr_rpc_server*>(arg);
 
+    if (evhttp_request_get_uri(req) == nullptr)
+    {
+        // libevent rejected the request, e.g. an oversized body, before giving it a URI
+        send_simple_response(req, HTTP_BADREQUEST);
+        return;
+    }
+
 #if LIBEVENT_VERSION_NUMBER >= 0x02020001
     char const* remote_host = nullptr;
 #else
@@ -805,6 +815,7 @@ void start_server(tr_rpc_server* server)
     auto* const httpd = evhttp_new(base);
 
     evhttp_set_allowed_methods(httpd, EVHTTP_REQ_GET | EVHTTP_REQ_POST | EVHTTP_REQ_OPTIONS);
+    evhttp_set_max_body_size(httpd, MaxRpcBodySize);
 
     auto const address = server->get_bind_address();
     auto const port = server->port();
