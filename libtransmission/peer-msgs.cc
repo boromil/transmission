@@ -60,6 +60,20 @@ struct tr_error;
 
 using namespace std::literals;
 
+bool is_valid_piece_message(
+    tr_torrent const& tor,
+    tr_piece_index_t const piece,
+    uint32_t const offset,
+    size_t const len) noexcept
+{
+    if (piece >= tor.piece_count() || len < 1U || len > tr_block_info::BlockSize)
+    {
+        return false;
+    }
+
+    return uint64_t{ offset } + len <= tor.piece_size(piece);
+}
+
 namespace
 {
 // initial capacity is big enough to hold a BtPeerMsgs::Piece message
@@ -1575,6 +1589,7 @@ ReadResult tr_peerMsgsImpl::process_peer_message(uint8_t id, MessageReader& payl
             publish(tr_peer_event::GotChoke());
             active_requests.set_has_none();
             request_timeouts_.clear();
+            incoming_.blocks.clear();
         }
 
         update_active(tr_direction::PeerToClient);
@@ -1779,6 +1794,7 @@ ReadResult tr_peerMsgsImpl::process_peer_message(uint8_t id, MessageReader& payl
                 if (auto const block = tor_.piece_loc(r.index, r.offset).block; active_requests.test(block))
                 {
                     active_requests.unset(block);
+                    incoming_.blocks.erase(block);
 
                     // Make sure maybe_send_block_requests() is called before removing the request
                     // from the wishlist, so that it will choose a block other than the rejected block.
@@ -1815,6 +1831,12 @@ ReadResult tr_peerMsgsImpl::read_piece_data(MessageReader& payload)
     auto const piece = payload.to_uint32();
     auto const offset = payload.to_uint32();
     auto const len = std::size(payload);
+
+    if (!is_valid_piece_message(tor_, piece, offset, len))
+    {
+        logwarn(this, fmt::format("got out-of-range piece {:d}:{:d}->{:d}", piece, offset, len));
+        return { ReadState::Err, len };
+    }
 
     auto const loc = tor_.piece_loc(piece, offset);
     auto const block = loc.block;
@@ -1858,6 +1880,12 @@ ReadResult tr_peerMsgsImpl::read_piece_data(MessageReader& payload)
     }
 
     auto& blocks = incoming_.blocks;
+    if (auto const iter = blocks.find(block); iter == std::end(blocks) && std::size(blocks) >= client_reqq())
+    {
+        logwarn(this, fmt::format("got too many partial blocks ({:d})", std::size(blocks)));
+        return { ReadState::Err, len };
+    }
+
     auto& incoming_block = blocks.try_emplace(block, block_size).first->second;
     payload.to_buf(std::span{ std::data(incoming_block.buf) + loc.block_offset, len });
 

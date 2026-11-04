@@ -25,6 +25,9 @@ class tr_peerMsgs;
 class tr_peer_info;
 struct tr_torrent;
 
+// Whether a peer's Piece message names a block that exists in the torrent.
+[[nodiscard]] bool is_valid_piece_message(tr_torrent const& tor, tr_piece_index_t piece, uint32_t offset, size_t len) noexcept;
+
 /**
  * @addtogroup peers Peers
  * @{
