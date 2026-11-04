@@ -1764,6 +1764,35 @@ bool isCurlURL(std::string_view url)
     return files;
 }
 
+namespace
+{
+[[nodiscard]] bool is_path_under(std::string_view const path, std::string_view const dir)
+{
+    auto const resolved_path = tr_sys_path_resolve(path);
+    auto const resolved_dir = tr_sys_path_resolve(dir);
+    if (std::empty(resolved_path) || std::empty(resolved_dir))
+    {
+        return false;
+    }
+
+#if defined(_WIN32) || defined(__APPLE__)
+    auto const path_cmp = tr_strlower(resolved_path);
+    auto const dir_cmp = tr_strlower(resolved_dir);
+#else
+    auto const& path_cmp = resolved_path;
+    auto const& dir_cmp = resolved_dir;
+#endif
+
+    if (!tr_strv_starts_with(path_cmp, dir_cmp) || std::size(path_cmp) <= std::size(dir_cmp))
+    {
+        return false;
+    }
+
+    return dir_cmp.back() == '/' || dir_cmp.back() == '\\' || path_cmp[std::size(dir_cmp)] == '/' ||
+        path_cmp[std::size(dir_cmp)] == '\\';
+}
+} // namespace
+
 void torrentAdd(tr_session* session, tr_variant::Map const& args_in, tr_rpc_idle_data* idle_data)
 {
     using namespace JsonRpc;
@@ -1887,7 +1916,20 @@ void torrentAdd(tr_session* session, tr_variant::Map const& args_in, tr_rpc_idle
     }
     else if (tr_sys_path_exists(filename))
     {
-        ok = ctor.set_metainfo_from_file(filename);
+        // RPC callers name a path on the server, so keep them inside the config directory
+        if (!is_path_under(filename, session->configDir()))
+        {
+            tr_rpc_idle_done(idle_data, Error::INVALID_PARAMS, "metainfo path must be inside the config directory"s);
+            return;
+        }
+
+        auto error = tr_error{};
+        ok = ctor.set_metainfo_from_file(filename, &error);
+        if (!ok && error.code() == EFBIG)
+        {
+            tr_rpc_idle_done(idle_data, Error::INVALID_PARAMS, "metainfo file is too large"s);
+            return;
+        }
     }
     else
     {

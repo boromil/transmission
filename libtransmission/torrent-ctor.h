@@ -24,6 +24,9 @@ struct tr_error;
 struct tr_session;
 struct tr_torrent;
 
+// refuse implausibly large metainfo files before reading them into memory
+inline constexpr auto MaxMetainfoFileSize = size_t{ 16U * 1024U * 1024U };
+
 struct tr_ctor
 {
 public:

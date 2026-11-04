@@ -3,11 +3,14 @@
 // or any future license endorsed by Mnemosyne LLC.
 // License text can be found in the licenses/ folder.
 
+#include <cerrno> // EFBIG, EINVAL
+
 #include "libtransmission/transmission.h"
 
 #include "libtransmission/torrent-ctor.h"
 #include "libtransmission/error.h"
 #include "libtransmission/file-utils.h"
+#include "libtransmission/file.h"
 #include "libtransmission/types.h"
 
 using namespace std::literals;
@@ -30,6 +33,30 @@ bool tr_ctor::set_metainfo_from_file(std::string_view filename, tr_error* error)
             error->set(EINVAL, "no filename specified"sv);
         }
 
+        return false;
+    }
+
+    auto local_error = tr_error{};
+    if (error == nullptr)
+    {
+        error = &local_error;
+    }
+
+    auto const info = tr_sys_path_get_info(filename, 0, error);
+    if (*error)
+    {
+        return false;
+    }
+
+    if (!info || !info->isFile())
+    {
+        error->set(EINVAL, "not a regular file"sv);
+        return false;
+    }
+
+    if (info->size > MaxMetainfoFileSize)
+    {
+        error->set(EFBIG, "metainfo file is too large"sv);
         return false;
     }
 

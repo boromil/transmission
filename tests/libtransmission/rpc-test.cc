@@ -5,8 +5,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno> // EFBIG
 #include <cstddef> // size_t
 #include <cstdint> // int64_t
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <iterator> // std::inserter
 #include <set>
@@ -18,6 +21,8 @@
 #include <libtransmission/quark.h>
 #include <libtransmission/transmission.h>
 #include <libtransmission/rpcimpl.h>
+#include <libtransmission/error.h>
+#include <libtransmission/torrent-ctor.h>
 #include <libtransmission/variant.h>
 
 #include "test-fixtures.h"
@@ -928,5 +933,37 @@ TEST_F(RpcTest, DISABLED_wellFormedLegacyFreeSpace)
     EXPECT_EQ(Expected, actual);
 }
 } // namespace free_space_test
+
+TEST_F(RpcTest, torrentAddRejectsPathOutsideConfigDir)
+{
+    auto const path = std::filesystem::temp_directory_path() / "tr-rpc-metainfo-outside.torrent";
+    {
+        auto out = std::ofstream{ path, std::ios::binary };
+        out << "not a torrent";
+    }
+
+    auto const request = std::string{ "{\"method\":\"torrent-add\",\"arguments\":{\"filename\":\"" } + path.string() + "\"}}";
+    auto const response = makeRequest(session_, request);
+    EXPECT_NE(std::string::npos, response.find("config directory"));
+
+    std::filesystem::remove(path);
+}
+
+TEST_F(RpcTest, metainfoFileSizeIsCapped)
+{
+    auto const path = std::string{ sandboxDir() } + "/oversized.torrent";
+    {
+        auto out = std::ofstream{ path, std::ios::binary };
+        out << std::string(MaxMetainfoFileSize + 1U, 'x');
+    }
+
+    auto* const ctor = tr_ctorNew(session_);
+    auto error = tr_error{};
+    EXPECT_FALSE(ctor->set_metainfo_from_file(path, &error));
+    EXPECT_EQ(EFBIG, error.code());
+    tr_ctorFree(ctor);
+
+    std::filesystem::remove(path);
+}
 
 } // namespace tr::test
