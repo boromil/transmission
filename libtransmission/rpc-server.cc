@@ -676,51 +676,6 @@ auto constexpr ServerStartRetryCount = 10;
 auto constexpr ServerStartRetryDelayIncrement = 5s;
 auto constexpr ServerStartRetryMaxDelay = 60s;
 
-bool bindUnixSocket(
-    [[maybe_unused]] struct event_base* base,
-    [[maybe_unused]] struct evhttp* httpd,
-    [[maybe_unused]] char const* path,
-    [[maybe_unused]] tr_mode_t socket_mode)
-{
-#ifdef _WIN32
-    tr_logAddError(
-        fmt::format(
-            _("Unix sockets are unsupported on Windows. Please change '{key}' in your settings."),
-            fmt::arg("key", tr_quark_get_string_view(TR_KEY_rpc_bind_address))));
-    return false;
-#else
-    auto addr = sockaddr_un{};
-    addr.sun_family = AF_UNIX;
-    *fmt::format_to_n(addr.sun_path, sizeof(addr.sun_path) - 1, "{:s}", path + std::size(TrUnixSocketPrefix)).out = '\0';
-
-    unlink(addr.sun_path);
-
-    struct evconnlistener* lev = evconnlistener_new_bind(
-        base,
-        nullptr,
-        nullptr,
-        LEV_OPT_CLOSE_ON_FREE,
-        -1,
-        reinterpret_cast<sockaddr const*>(&addr),
-        sizeof(addr));
-
-    if (lev == nullptr)
-    {
-        return false;
-    }
-
-    if (chmod(addr.sun_path, socket_mode) != 0)
-    {
-        tr_logAddWarn(
-            fmt::format(
-                fmt::runtime(_("Couldn't set RPC socket mode to {mode:#o}, defaulting to 0755")),
-                fmt::arg("mode", socket_mode)));
-    }
-
-    return evhttp_bind_listener(httpd, lev) != nullptr;
-#endif
-}
-
 void start_server(tr_rpc_server* server);
 
 auto rpc_server_start_retry(tr_rpc_server* server)
@@ -801,6 +756,16 @@ void start_server(tr_rpc_server* server)
         return;
     }
 
+    // libevent's HTTP server resolves the peer address with getnameinfo(), which fails for
+    // AF_UNIX and terminates the process, so refuse the bind until it carries a fix
+    if (server->bind_address_->is_unix_addr())
+    {
+        tr_logAddError(
+            fmt::format(
+                fmt::runtime(_("Unix socket RPC is not supported by this build; set 'rpc-bind-address' to an IP address"))));
+        return;
+    }
+
     auto* const base = server->session->event_base();
     auto* const httpd = evhttp_new(base);
 
@@ -809,9 +774,7 @@ void start_server(tr_rpc_server* server)
     auto const address = server->get_bind_address();
     auto const port = server->port();
 
-    bool const success = server->bind_address_->is_unix_addr() ?
-        bindUnixSocket(base, httpd, address.c_str(), server->settings().socket_mode) :
-        (tr_evhttp_bind_socket(httpd, address.c_str(), port.host()) != -1);
+    bool const success = tr_evhttp_bind_socket(httpd, address.c_str(), port.host()) != -1;
 
     auto const addr_port_str = server->bind_address_->to_string(port);
 
