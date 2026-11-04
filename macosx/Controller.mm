@@ -5054,10 +5054,34 @@ static void removeKeRangerRansomware()
         [torrent sleep]; //have to call on all, regardless if they are active
     }
 
-    //if there are any running transfers, wait 15 seconds for them to stop
-    if (anyActive)
+    if (!anyActive)
     {
-        sleep(15);
+        return;
+    }
+
+    // [torrent sleep] only queues the stop to the session thread; wait for it briefly so the
+    // resume data is written before the system sleeps, instead of freezing for 15 seconds
+    static auto constexpr PollIntervalSeconds = 0.1;
+    static auto constexpr MaxPolls = 10U;
+    for (NSUInteger i = 0; i < MaxPolls; ++i)
+    {
+        [NSThread sleepForTimeInterval:PollIntervalSeconds];
+        [Torrent updateTorrents:self.fTorrents];
+
+        BOOL anyStillActive = NO;
+        for (Torrent* torrent in self.fTorrents)
+        {
+            if (torrent.active)
+            {
+                anyStillActive = YES;
+                break;
+            }
+        }
+
+        if (!anyStillActive)
+        {
+            break;
+        }
     }
 }
 
