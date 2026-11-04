@@ -18,6 +18,7 @@
 #include <libtransmission/quark.h>
 #include <libtransmission/transmission.h>
 #include <libtransmission/rpcimpl.h>
+#include <libtransmission/rpc-login-attempts.h>
 #include <libtransmission/variant.h>
 
 #include "test-fixtures.h"
@@ -928,5 +929,57 @@ TEST_F(RpcTest, DISABLED_wellFormedLegacyFreeSpace)
     EXPECT_EQ(Expected, actual);
 }
 } // namespace free_space_test
+
+TEST(RpcLoginAttemptsTest, peersAreIndependent)
+{
+    auto attempts = tr_rpc_login_attempts{};
+    auto const now = time_t{ 1'000'000 };
+
+    for (size_t i = 0; i < 3U; ++i)
+    {
+        attempts.note_failure("peer-a", now);
+    }
+    EXPECT_TRUE(attempts.is_locked_out("peer-a", now, 3U));
+    EXPECT_FALSE(attempts.is_locked_out("peer-b", now, 3U));
+
+    // a success clears only that peer's failures
+    attempts.note_success("peer-b");
+    EXPECT_FALSE(attempts.is_locked_out("peer-b", now, 3U));
+    EXPECT_TRUE(attempts.is_locked_out("peer-a", now, 3U));
+
+    attempts.note_success("peer-a");
+    EXPECT_FALSE(attempts.is_locked_out("peer-a", now, 3U));
+    EXPECT_EQ(0U, attempts.size());
+}
+
+TEST(RpcLoginAttemptsTest, lockoutDecays)
+{
+    auto attempts = tr_rpc_login_attempts{};
+    auto const start = time_t{ 1'000'000 };
+
+    for (size_t i = 0; i < 3U; ++i)
+    {
+        attempts.note_failure("peer", start);
+    }
+    EXPECT_TRUE(attempts.is_locked_out("peer", start, 3U));
+    EXPECT_TRUE(attempts.is_locked_out("peer", start + tr_rpc_login_attempts::Window - 1, 3U));
+    EXPECT_FALSE(attempts.is_locked_out("peer", start + tr_rpc_login_attempts::Window, 3U));
+
+    // a failure after the window starts a fresh window instead of staying locked out
+    attempts.note_failure("peer", start + tr_rpc_login_attempts::Window);
+    EXPECT_FALSE(attempts.is_locked_out("peer", start + tr_rpc_login_attempts::Window, 3U));
+}
+
+TEST(RpcLoginAttemptsTest, peerCountIsCapped)
+{
+    auto attempts = tr_rpc_login_attempts{};
+    auto const now = time_t{ 1'000'000 };
+
+    for (size_t i = 0; i < tr_rpc_login_attempts::MaxPeers + 100U; ++i)
+    {
+        attempts.note_failure(std::to_string(i), now + static_cast<time_t>(i));
+    }
+    EXPECT_LE(attempts.size(), tr_rpc_login_attempts::MaxPeers);
+}
 
 } // namespace tr::test

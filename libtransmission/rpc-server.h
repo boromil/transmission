@@ -19,6 +19,7 @@
 #include "libtransmission/constants.h" // TrDefaultHttpServerBasePath
 #include "libtransmission/net.h"
 #include "libtransmission/quark.h"
+#include "libtransmission/rpc-login-attempts.h"
 #include "libtransmission/session-settings.h"
 #include "libtransmission/types.h"
 #include "libtransmission/utils-ev.h"
@@ -150,6 +151,6 @@ public:
     tr::evhelpers::evhttp_unique_ptr httpd;
     tr_session* const session;
 
-    size_t login_attempts_ = 0U;
+    tr_rpc_login_attempts login_attempts_;
     int start_retry_counter = 0;
 };

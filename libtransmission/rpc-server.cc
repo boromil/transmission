@@ -537,12 +537,14 @@ void handle_request(struct evhttp_request* req, void* arg)
 #endif
     auto remote_port = ev_uint16_t{};
     evhttp_connection_get_peer(con, &remote_host, &remote_port);
+    auto const peer = std::string_view{ remote_host != nullptr ? remote_host : "" };
 
     auto* const output_headers = evhttp_request_get_output_headers(req);
     evhttp_add_header(output_headers, "Server", MY_REALM);
     add_clickjacking_prevention_headers(output_headers);
 
-    if (server->is_anti_brute_force_enabled() && server->login_attempts_ >= server->settings().anti_brute_force_limit)
+    if (server->is_anti_brute_force_enabled() &&
+        server->login_attempts_.is_locked_out(peer, tr_time(), server->settings().anti_brute_force_limit))
     {
         tr_logAddWarn(
             fmt::format(
@@ -584,14 +586,14 @@ void handle_request(struct evhttp_request* req, void* arg)
         evhttp_add_header(output_headers, "WWW-Authenticate", "Basic realm=\"" MY_REALM "\"");
         if (server->is_anti_brute_force_enabled())
         {
-            ++server->login_attempts_;
+            server->login_attempts_.note_failure(peer, tr_time());
         }
 
         send_simple_response(req, HttpErrorUnauthorized);
         return;
     }
 
-    server->login_attempts_ = 0;
+    server->login_attempts_.note_success(peer);
 
     // eg '/transmission/web/' and '/transmission/rpc'
     auto const& base_path = server->url();
@@ -983,7 +985,7 @@ void tr_rpc_server::set_anti_brute_force_enabled(bool enabled) noexcept
 
     if (!enabled)
     {
-        login_attempts_ = 0;
+        login_attempts_.clear();
     }
 }
 
