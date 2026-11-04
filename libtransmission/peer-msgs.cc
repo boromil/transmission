@@ -60,6 +60,15 @@ struct tr_error;
 
 using namespace std::literals;
 
+size_t max_peer_message_len(size_t const piece_count) noexcept
+{
+    // a bitfield is the largest legitimate message: one id byte plus one bit per piece.
+    // before metainfo arrives there is no piece count, so allow a bitfield for 8M pieces.
+    auto constexpr MagnetBitfieldLen = size_t{ 1024U * 1024U };
+    auto constexpr PieceMessageLen = size_t{ 1U } + 2U * sizeof(uint32_t) + tr_block_info::BlockSize;
+    return std::max({ MagnetBitfieldLen, PieceMessageLen, size_t{ 1U } + ((piece_count + 7U) / 8U) });
+}
+
 namespace
 {
 // initial capacity is big enough to hold a BtPeerMsgs::Piece message
@@ -1949,6 +1958,13 @@ ReadResult tr_peerMsgsImpl::can_read_impl(tr_peerIo* io)
         {
             logtrace(this, "got KeepAlive");
             return { ReadState::Now, {} };
+        }
+
+        if (message_len > max_peer_message_len(tor_.piece_count()))
+        {
+            logtrace(this, fmt::format("peer sent an oversized message: {} bytes", message_len));
+            publish(tr_peer_event::GotError(EMSGSIZE));
+            return { ReadState::Err, {} };
         }
 
         current_message_len = message_len;

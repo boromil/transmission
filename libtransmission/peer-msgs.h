@@ -25,6 +25,10 @@ class tr_peerMsgs;
 class tr_peer_info;
 struct tr_torrent;
 
+// The largest message a peer is allowed to send us. Before metainfo is known `piece_count` is
+// zero and the bound is a fixed floor; afterwards it is the size of a bitfield for the torrent.
+[[nodiscard]] size_t max_peer_message_len(size_t piece_count) noexcept;
+
 /**
  * @addtogroup peers Peers
  * @{
